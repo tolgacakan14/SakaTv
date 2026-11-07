@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Android 11 ve öncesi: ayarlar (SharedPreferences) ve filesDir (state.json, TMDB listeleri) yedeklenir. cacheDir hiç yedeklenmez. -->
+<full-backup-content>
+    <include domain="sharedpref" path="." />
+    <include domain="file" path="." />
+</full-backup-content>

@@ -22,10 +22,7 @@ import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
-import androidx.compose.ui.draw.drawBehind
 import androidx.compose.ui.focus.FocusRequester
-import androidx.compose.ui.geometry.Offset
-import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -47,17 +44,16 @@ fun FilmDetail(st: SakaState, key: String) {
     val watched = f.key in st.watched
     val listed = f.key in st.myList
 
+    val now = rememberClock()
     val genre = f.genres.split(",").firstOrNull()?.trim().orEmpty()
-    val sims = st.archive.filter { it.key != f.key && it.key !in st.watched && genre.isNotBlank() && it.genres.contains(genre) }
-        .ifEmpty { st.archive.filter { it.key != f.key && it.key !in st.watched } }
-        .take(6)
+    val pool = if (f.isTv) st.tvPopular + st.tvFresh else st.archive
+    val sims = remember(f.key, genre, pool, st.watched) {
+        val open = pool.filter { it.key != f.key && it.key !in st.watched }.distinctBy { it.key }
+        open.filter { genre.isNotBlank() && it.genres.contains(genre) }.ifEmpty { open }.take(6)
+    }
 
-    Box(
-        Modifier.fillMaxSize().background(C.bg).drawBehind {
-            drawRect(Brush.radialGradient(0f to Color(0xFF1A1A1A), 0.55f to Color(0xFF070707), 1f to Color.Black,
-                center = Offset(202.dp.toPx(), 300.dp.toPx()), radius = 520.dp.toPx()))
-        },
-    ) {
+    Box(Modifier.fillMaxSize().background(C.bg)) {
+        SunLight(now)
         Row(Modifier.fillMaxWidth().padding(start = 72.dp, end = 72.dp, top = 44.dp), horizontalArrangement = Arrangement.SpaceBetween) {
             LinkText("← Ana ekran", { st.screen = Screen.Home })
             Row(verticalAlignment = Alignment.Bottom) {
@@ -76,7 +72,7 @@ fun FilmDetail(st: SakaState, key: String) {
             }
             Spacer(Modifier.height(12.dp))
             BasicText(
-                "★ " + "%.1f".format(f.rating) + "   " + listOf(f.year, f.genres, f.runtimeText).filter { it.isNotBlank() }.joinToString(" · "),
+                (if (f.rating > 0) "★ " + "%.1f".format(f.rating) + "   " else "") + listOf(if (f.isTv) "Dizi" else "", f.year, f.genres, f.runtimeText).filter { it.isNotBlank() }.joinToString(" · "),
                 style = inter(17, color = C.muted),
             )
             Spacer(Modifier.height(16.dp))
@@ -113,12 +109,12 @@ fun FilmDetail(st: SakaState, key: String) {
                 Spacer(Modifier.height(12.dp)); BasicText("Bir daha önerilmeyecek", style = inter(16, color = C.muted))
             }
         }
-        LaunchedEffect(showWhere) { if (showWhere && where == null) where = st.films.providers(f.tmdbId) }
+        LaunchedEffect(showWhere) { if (showWhere && where == null) where = st.providers(f) }
 
         if (sims.isNotEmpty()) {
             Column(Modifier.offset(380.dp, 500.dp)) {
                 Row(verticalAlignment = Alignment.Bottom) {
-                    BasicText("Benzer filmler", style = serif(24))
+                    BasicText(if (f.isTv) "Benzer diziler" else "Benzer filmler", style = serif(24))
                     Spacer(Modifier.width(16.dp))
                     BasicText(if (genre.isNotBlank()) genre else "arşivden", style = inter(17, color = C.muted))
                 }

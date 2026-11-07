@@ -21,12 +21,18 @@
     </queries>
 
     <application
-        android:allowBackup="false"
+        android:name=".SakaApp"
+        android:allowBackup="true"
+        android:fullBackupContent="@xml/backup_rules"
+        android:dataExtractionRules="@xml/data_extraction_rules"
+        android:largeHeap="false"
+        android:hardwareAccelerated="true"
         android:banner="@drawable/banner"
         android:icon="@drawable/ic_launcher"
         android:label="@string/app_name"
         android:supportsRtl="false"
-        android:theme="@style/Theme.SakaTV">
+        android:theme="@style/Theme.SakaTV"
+        tools:targetApi="31">
 
         <activity
             android:name=".MainActivity"
@@ -56,6 +62,18 @@
             android:permission="android.permission.BIND_NOTIFICATION_LISTENER_SERVICE">
             <intent-filter>
                 <action android:name="android.service.notification.NotificationListenerService" />
+            </intent-filter>
+        </service>
+
+        <!-- Sistem ekran koruyucusu: TV kendi bekleme süresinde, başka uygulama açıkken bile Şaka'yı gösterir. -->
+        <service
+            android:name=".SakaDream"
+            android:exported="true"
+            android:label="Şaka"
+            android:permission="android.permission.BIND_DREAM_SERVICE">
+            <intent-filter>
+                <action android:name="android.service.dreams.DreamService" />
+                <category android:name="android.intent.category.DEFAULT" />
             </intent-filter>
         </service>
     </application>

@@ -41,12 +41,16 @@ fun AllAppsScreen(st: SakaState) {
     BackHandler(enabled = menuFor == null) { st.screen = Screen.Home }
     LaunchedEffect(Unit) { delay(60); runCatching { first.requestFocus() } }
 
-    val shown = st.allApps
-        .filter { filter == null || it.category == filter }
-        .let { l -> if (byRecent) l.sortedByDescending { st.apps.lastUsed(it.pkg) } else l }
+    val shown = remember(st.allApps, filter, byRecent) {
+        st.allApps
+            .filter { filter == null || it.category == filter }
+            .let { l -> if (byRecent) l.sortedByDescending { st.apps.lastUsed(it.pkg) } else l }
+            .sortedByDescending { st.isFeatured(it.pkg) } // öne çıkan (XCIPTV) her zaman ilk
+    }
+    val now = rememberClock()
 
     Box(Modifier.fillMaxSize().background(C.bg)) {
-        TodLight(st.tod)
+        SunLight(now)
         Column(Modifier.fillMaxSize().padding(start = 72.dp, end = 72.dp, top = 44.dp)) {
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.Bottom) {
                 LinkText("← Ana ekran", { st.screen = Screen.Home })
@@ -60,7 +64,7 @@ fun AllAppsScreen(st: SakaState) {
             Row(verticalAlignment = Alignment.Bottom) {
                 BasicText("Uygulamalar", style = serif(40))
                 Spacer(Modifier.width(16.dp))
-                BasicText("${st.allApps.size} uygulama · ${st.dock.size} tanesi dock'ta", style = inter(17, color = C.muted), modifier = Modifier.padding(bottom = 5.dp))
+                BasicText("${st.allApps.size} uygulama · ${st.dock.size} tanesi önde", style = inter(17, color = C.muted), modifier = Modifier.padding(bottom = 5.dp))
             }
             Spacer(Modifier.height(20.dp))
             Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
@@ -89,7 +93,7 @@ fun AllAppsScreen(st: SakaState) {
                     Box(contentAlignment = Alignment.Center) {
                         AppItem(
                             a, (if (a.pkg in st.dock) "• " else "") + a.label, glyphFor(a.label),
-                            { st.apps.launch(a.pkg) }, onLong = { menuFor = a.pkg }, alwaysLabel = true,
+                            { st.launch(a.pkg) }, onLong = { menuFor = a.pkg }, alwaysLabel = true,
                         )
                     }
                 }
@@ -98,7 +102,7 @@ fun AllAppsScreen(st: SakaState) {
                 Pill("Google Play'de yeni uygulama bul →", { st.apps.openStore() }, solid = true)
                 Pill("Dosyadan yükle", { st.apps.openDownloader() })
                 Spacer(Modifier.width(10.dp))
-                BasicText("Uzun bas: dock'a ekle, sırala, kaldır", style = inter(16, color = C.muted))
+                BasicText("Uzun bas: öne al, sırala, uygulama bilgisi", style = inter(16, color = C.muted))
             }
         }
         menuFor?.let { AppMenu(st, it, onClose = { menuFor = null }) }

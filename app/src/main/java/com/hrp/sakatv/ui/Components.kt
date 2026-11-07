@@ -7,7 +7,7 @@ import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.border
-import androidx.compose.foundation.clickable
+import androidx.compose.foundation.focusable
 import androidx.compose.foundation.interaction.MutableInteractionSource
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
@@ -28,6 +28,7 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.withFrameNanos
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -41,11 +42,13 @@ import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
 import androidx.compose.ui.graphics.TransformOrigin
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.lerp
 import androidx.compose.ui.input.key.KeyEventType
 import androidx.compose.ui.input.key.onPreviewKeyEvent
 import androidx.compose.ui.input.key.type
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.platform.LocalDensity
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
@@ -56,9 +59,20 @@ import com.hrp.sakatv.data.TvApp
 
 val GRAY = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
 
+private val OK_KEYS = intArrayOf(
+    NativeKey.KEYCODE_DPAD_CENTER, NativeKey.KEYCODE_ENTER, NativeKey.KEYCODE_NUMPAD_ENTER, NativeKey.KEYCODE_BUTTON_A,
+)
+
+/** OK tuşunun durumu. Durum nesnesi değil: yazmak yeniden çizim tetiklemez. */
+private class KeyLatch {
+    var down = false
+    var long = false
+}
+
 /**
- * Kumandayla seçilebilen her şeyin temeli. OK: tıklama. OK'a uzun basmak: onLong.
- * Odak durumu içeriğe verilir, görünüm tamamen içerikte çizilir.
+ * Kumandayla seçilebilen her şeyin temeli. OK: tıklama. OK'a uzun basmak (ya da Menü tuşu): onLong.
+ * OK tuşunu tamamen kendisi işler: tıklama sadece bu öğede başlayan bir basışın bırakılmasıyla olur.
+ * Böylece uzun basıştan sonra açılan pencerede ya da yeni ekranda "hayalet" tıklama olmaz.
  */
 @Composable
 fun Focusable(
@@ -70,7 +84,7 @@ fun Focusable(
     content: @Composable (focused: Boolean) -> Unit,
 ) {
     var focused by remember { mutableStateOf(false) }
-    var longFired by remember { mutableStateOf(false) }
+    val latch = remember { KeyLatch() }
     val src = remember { MutableInteractionSource() }
     var m = modifier
     if (requester != null) m = m.focusRequester(requester)
@@ -78,22 +92,73 @@ fun Focusable(
         m
             .onPreviewKeyEvent { e ->
                 val k = e.nativeKeyEvent
-                val ok = k.keyCode == NativeKey.KEYCODE_DPAD_CENTER || k.keyCode == NativeKey.KEYCODE_ENTER
-                if (onLong == null) return@onPreviewKeyEvent false
-                if (k.keyCode == NativeKey.KEYCODE_MENU && e.type == KeyEventType.KeyUp) { onLong(); return@onPreviewKeyEvent true }
-                if (!ok) return@onPreviewKeyEvent false
-                when {
-                    e.type == KeyEventType.KeyDown && k.repeatCount > 0 -> {
-                        if (!longFired) { longFired = true; onLong() }
+                if (k.keyCode == NativeKey.KEYCODE_MENU) {
+                    if (onLong == null) return@onPreviewKeyEvent false
+                    if (e.type == KeyEventType.KeyUp) onLong()
+                    return@onPreviewKeyEvent true
+                }
+                if (k.keyCode !in OK_KEYS) return@onPreviewKeyEvent false
+                when (e.type) {
+                    KeyEventType.KeyDown -> {
+                        if (k.repeatCount == 0) {
+                            latch.down = true; latch.long = false
+                        } else if (onLong != null && latch.down && !latch.long) {
+                            latch.long = true; onLong()
+                        }
                         true
                     }
-                    e.type == KeyEventType.KeyUp && longFired -> { longFired = false; true }
+                    KeyEventType.KeyUp -> {
+                        val click = latch.down && !latch.long
+                        latch.down = false; latch.long = false
+                        if (click) onClick()
+                        true
+                    }
                     else -> false
                 }
             }
-            .onFocusChanged { focused = it.isFocused; if (it.isFocused) onFocus() }
-            .clickable(interactionSource = src, indication = null, onClick = onClick),
+            .onFocusChanged { s ->
+                if (focused != s.isFocused) {
+                    focused = s.isFocused
+                    if (s.isFocused) onFocus() else { latch.down = false; latch.long = false }
+                }
+            }
+            .focusable(interactionSource = src),
     ) { content(focused) }
+}
+
+/**
+ * Yön tuşlarını öğe bazında yönlendirir. İşleyici true dönerse tuş tüketilir ve odak araması yapılmaz.
+ * Focusable'a modifier olarak verilir; yapı her zaman aynı kalsın diye işleyiciler null olabilir.
+ */
+fun Modifier.dpad(
+    up: (() -> Boolean)? = null,
+    down: (() -> Boolean)? = null,
+    left: (() -> Boolean)? = null,
+    right: (() -> Boolean)? = null,
+): Modifier = onPreviewKeyEvent { e ->
+    if (e.type != KeyEventType.KeyDown) return@onPreviewKeyEvent false
+    val h = when (e.nativeKeyEvent.keyCode) {
+        NativeKey.KEYCODE_DPAD_UP -> up
+        NativeKey.KEYCODE_DPAD_DOWN -> down
+        NativeKey.KEYCODE_DPAD_LEFT -> left
+        NativeKey.KEYCODE_DPAD_RIGHT -> right
+        else -> null
+    }
+    h?.invoke() ?: false
+}
+
+/**
+ * Odağı bir hedefe taşır; hedef henüz kompoze edilmemişse (tembel liste kayarken) birkaç kare dener.
+ * landed: odağın gerçekten oraya vardığını söyler (onFocus geri çağrılarıyla tutulan bilgi).
+ */
+suspend fun focusSoon(req: () -> FocusRequester?, tries: Int = 10, landed: () -> Boolean): Boolean {
+    repeat(tries) {
+        withFrameNanos { }
+        req()?.let { r -> runCatching { r.requestFocus() } }
+        withFrameNanos { }
+        if (landed()) return true
+    }
+    return false
 }
 
 /** Alt çizgili metin bağlantısı: Karşılaştır, Yenile, sekmeler, alt menü. */
@@ -105,16 +170,17 @@ fun LinkText(
     selected: Boolean = false,
     fontSize: Int = 17,
     onFocus: () -> Unit = {},
+    requester: FocusRequester? = null,
 ) {
-    Focusable(onClick, modifier, onFocus = onFocus) { f ->
+    Focusable(onClick, modifier, onFocus = onFocus, requester = requester) { f ->
         val c by animateColorAsState(if (f || selected) C.fg else C.muted, tween(DUR), label = "lc")
-        val u by animateColorAsState(if (f) C.fg else if (selected) C.fg.copy(alpha = .6f) else Color.Transparent, tween(DUR), label = "lu")
+        val u = animateColorAsState(if (f) C.fg else if (selected) C.fg.copy(alpha = .6f) else Color.Transparent, tween(DUR), label = "lu")
         BasicText(
             text,
             style = inter(fontSize, if (f || selected) FontWeight.SemiBold else FontWeight.Normal, c),
             modifier = Modifier
                 .padding(vertical = 2.dp)
-                .drawBehind { drawLine(u, Offset(0f, size.height), Offset(size.width, size.height), 1.5.dp.toPx()) },
+                .drawBehind { drawLine(u.value, Offset(0f, size.height), Offset(size.width, size.height), 1.5.dp.toPx()) },
         )
     }
 }
@@ -123,24 +189,33 @@ fun LinkText(
 @Composable
 fun Pill(text: String, onClick: () -> Unit, modifier: Modifier = Modifier, solid: Boolean = false, onFocus: () -> Unit = {}, requester: FocusRequester? = null) {
     Focusable(onClick, modifier, onFocus = onFocus, requester = requester) { f ->
-        val bg by animateColorAsState(if (f) C.fg else Color.Transparent, tween(DUR), label = "pb")
+        val bg = animateColorAsState(if (f) C.fg else Color.Transparent, tween(DUR), label = "pb")
         val fg by animateColorAsState(if (f) C.focusFg else C.fg, tween(DUR), label = "pf")
         BasicText(
             text,
             style = inter(17, if (solid) FontWeight.SemiBold else FontWeight.Medium, fg),
             modifier = Modifier
                 .clip(RoundedCornerShape(999.dp))
-                .background(bg)
+                .drawBehind { drawRect(bg.value) }
                 .border(1.dp, if (solid || f) C.fg else C.line, RoundedCornerShape(999.dp))
                 .padding(horizontal = 24.dp, vertical = 11.dp),
         )
     }
 }
 
-/** Film afişi. Afiş yoksa tonlu zemin ve başlık. Seçili değilse gri ve soluk. */
+/** Afişin altındaki küçük not: yıl · puan. */
+fun filmCaption(f: Film): String = listOfNotNull(
+    f.year.ifBlank { null },
+    if (f.rating > 0) "★ " + "%.1f".format(f.rating) else null,
+).joinToString(" · ")
+
+/** Film afişi. Afiş yoksa tonlu zemin ve başlık. Seçili değilse gri. Görsel tam ekran boyutunda çözülür. */
 @Composable
 fun PosterImage(film: Film, w: Int, h: Int, color: Boolean, modifier: Modifier = Modifier, large: Boolean = false) {
     val ctx = LocalContext.current
+    val d = LocalDensity.current
+    val pw = with(d) { w.dp.roundToPx() }
+    val ph = with(d) { h.dp.roundToPx() }
     Box(
         modifier
             .size(w.dp, h.dp)
@@ -158,8 +233,8 @@ fun PosterImage(film: Film, w: Int, h: Int, color: Boolean, modifier: Modifier =
         val url = if (large) film.posterUrlLarge else film.posterUrl
         if (url != null) {
             AsyncImage(
-                model = remember(url) {
-                    ImageRequest.Builder(ctx).data(url).size(if (large) 500 else 342, if (large) 750 else 513).crossfade(200).build()
+                model = remember(url, pw, ph) {
+                    ImageRequest.Builder(ctx).data(url).size(pw, ph).crossfade(160).build()
                 },
                 contentDescription = film.title,
                 contentScale = ContentScale.Crop,
@@ -170,43 +245,54 @@ fun PosterImage(film: Film, w: Int, h: Int, color: Boolean, modifier: Modifier =
     }
 }
 
-/** Satırlardaki afiş kartı: odaklanınca hafif büyür, altında not çıkar. */
+/** Satırlardaki afiş kartı: altında her zaman adı ve yıl · puan. Odakta büyür, ad beyazlaşır. */
 @Composable
 fun PosterCard(
     film: Film,
-    caption: String,
     onClick: () -> Unit,
     modifier: Modifier = Modifier,
+    caption: String = filmCaption(film),
     badge: String? = null,
     onLong: (() -> Unit)? = null,
     onFocus: () -> Unit = {},
+    requester: FocusRequester? = null,
 ) {
-    Focusable(onClick, modifier, onLong = onLong, onFocus = onFocus) { f ->
-        val sc by animateFloatAsState(if (f) 1.06f else 1f, tween(DUR, easing = EASE), label = "s")
-        val al by animateFloatAsState(if (f) 1f else 0.42f, tween(DUR, easing = EASE), label = "a")
+    Focusable(onClick, modifier, onLong = onLong, onFocus = onFocus, requester = requester) { f ->
+        val k = animateFloatAsState(if (f) 1f else 0f, tween(DUR, easing = EASE), label = "pc")
         Column(Modifier.width(120.dp)) {
             Box(
                 Modifier.graphicsLayer {
-                    scaleX = sc; scaleY = sc; alpha = al
-                    translationY = if (f) -6.dp.toPx() else 0f
+                    val v = k.value
+                    val s = 1f + 0.06f * v
+                    scaleX = s; scaleY = s
+                    alpha = 0.5f + 0.5f * v
+                    translationY = -6.dp.toPx() * v
                     transformOrigin = TransformOrigin(0.5f, 1f)
                 },
             ) {
                 PosterImage(film, 120, 180, color = f, modifier = if (f) Modifier.ring() else Modifier)
                 if (badge != null) {
                     Box(
-                        Modifier.align(Alignment.TopEnd).padding(10.dp).size(24.dp).clip(CircleShape).background(C.fg),
+                        Modifier.align(Alignment.TopEnd).padding(8.dp).size(24.dp).clip(CircleShape).background(C.fg),
                         contentAlignment = Alignment.Center,
                     ) { BasicText(badge, style = inter(13, FontWeight.SemiBold, C.focusFg)) }
                 }
             }
-            Spacer(Modifier.height(10.dp))
-            BasicText(caption, style = inter(16, color = C.muted.copy(alpha = if (f) 1f else 0f)), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            Spacer(Modifier.height(12.dp))
+            BasicText(
+                film.title,
+                style = inter(15, if (f) FontWeight.Medium else FontWeight.Normal, if (f) C.fg else C.muted),
+                maxLines = 1, overflow = TextOverflow.Ellipsis,
+            )
+            if (caption.isNotBlank()) {
+                Spacer(Modifier.height(3.dp))
+                BasicText(caption, style = inter(13, color = if (f) C.muted else C.dim), maxLines = 1, overflow = TextOverflow.Ellipsis)
+            }
         }
     }
 }
 
-/** Tasarımdaki çift halka: 3dp siyah boşluk, 2dp beyaz çizgi. */
+/** Tasarımdaki çift halka: 4dp boşluk, 2dp beyaz çizgi. */
 fun Modifier.ring(radius: Int = 8): Modifier = this
     .drawBehind {
         val r = radius.dp.toPx()
@@ -220,19 +306,19 @@ fun Modifier.ring(radius: Int = 8): Modifier = this
         )
     }
 
-/** Uygulama simgesi. Gerçek logo sistemden gelir (banner ya da ikon). */
+/** Uygulama simgesi. Gerçek logo sistemden gelir. Animasyon sadece çizim katmanında okunur. */
 @Composable
 fun AppGlyph(app: TvApp?, glyph: String, focused: Boolean, size: Int = 56, outlined: Boolean = false) {
-    val bg by animateColorAsState(if (focused) C.fg else if (outlined) Color.Transparent else C.idle, tween(DUR), label = "ab")
-    val sc by animateFloatAsState(if (focused) 1.12f else 1f, tween(DUR, easing = EASE), label = "as")
+    val k = animateFloatAsState(if (focused) 1f else 0f, tween(DUR, easing = EASE), label = "ag")
     val shape = RoundedCornerShape((size * 0.28f).dp)
+    val idle = if (outlined) Color.Transparent else C.idle
     Box(
         Modifier
-            .graphicsLayer { scaleX = sc; scaleY = sc }
+            .graphicsLayer { val s = 1f + 0.12f * k.value; scaleX = s; scaleY = s }
             .then(if (focused) Modifier.ring((size * 0.28f).toInt()) else Modifier)
             .size(size.dp)
             .clip(shape)
-            .background(bg)
+            .drawBehind { drawRect(lerp(idle, C.fg, k.value)) }
             .then(if (outlined && !focused) Modifier.border(1.dp, C.line, shape) else Modifier),
         contentAlignment = Alignment.Center,
     ) {
@@ -245,7 +331,7 @@ fun AppGlyph(app: TvApp?, glyph: String, focused: Boolean, size: Int = 56, outli
     }
 }
 
-/** Dock ve uygulama ızgarasındaki öğe: simge, odakta adı. */
+/** Uygulama ızgarasındaki öğe: simge, altında adı. */
 @Composable
 fun AppItem(
     app: TvApp?,
@@ -263,13 +349,13 @@ fun AppItem(
         Column(Modifier.width(82.dp), horizontalAlignment = Alignment.CenterHorizontally) {
             AppGlyph(app, glyph, f, outlined = outlined)
             Spacer(Modifier.height(if (alwaysLabel) 10.dp else 4.dp))
-            val a by animateFloatAsState(if (f || alwaysLabel) 1f else 0f, tween(DUR), label = "la")
+            val a = animateFloatAsState(if (f || alwaysLabel) 1f else 0f, tween(DUR), label = "la")
             BasicText(
                 label,
                 style = inter(16, if (f) FontWeight.Medium else FontWeight.Normal, if (f) C.fg else C.muted),
                 maxLines = 1,
                 overflow = TextOverflow.Ellipsis,
-                modifier = Modifier.graphicsLayer { alpha = a },
+                modifier = Modifier.graphicsLayer { alpha = a.value },
             )
         }
     }

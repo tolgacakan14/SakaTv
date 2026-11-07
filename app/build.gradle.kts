@@ -24,6 +24,10 @@ android {
         versionCode = 1
         versionName = "1.0"
         buildConfigField("String", "TMDB_KEY", "\"$tmdbKey\"")
+        // Yerel kütüphane yok; olursa sadece TV'nin işlemci mimarileri paketlenir.
+        ndk { abiFilters += listOf("armeabi-v7a", "arm64-v8a") }
+        // Bağımlılıklardaki onlarca dilin metinleri APK'ya girmesin.
+        resourceConfigurations += listOf("tr", "en")
     }
 
     buildTypes {
@@ -49,6 +53,21 @@ android {
     buildFeatures {
         compose = true
         buildConfig = true
+    }
+    packaging {
+        resources {
+            excludes += listOf(
+                "/META-INF/{AL2.0,LGPL2.1}",
+                "/META-INF/LICENSE*",
+                "/META-INF/NOTICE*",
+                "DebugProbesKt.bin",
+                "/kotlin-tooling-metadata.json",
+            )
+        }
+    }
+    dependenciesInfo {
+        includeInApk = false
+        includeInBundle = false
     }
 }
 

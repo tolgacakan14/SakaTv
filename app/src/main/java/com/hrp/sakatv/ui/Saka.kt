@@ -1,13 +1,7 @@
 package com.hrp.sakatv.ui
 
 import androidx.compose.animation.core.FastOutSlowInEasing
-import androidx.compose.animation.core.LinearEasing
-import androidx.compose.animation.core.RepeatMode
-import androidx.compose.animation.core.animateFloat
 import androidx.compose.animation.core.animateFloatAsState
-import androidx.compose.animation.core.infiniteRepeatable
-import androidx.compose.animation.core.keyframes
-import androidx.compose.animation.core.rememberInfiniteTransition
 import androidx.compose.animation.core.tween
 import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.layout.Column
@@ -19,22 +13,28 @@ import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.text.BasicText
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.State
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableLongStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.withFrameMillis
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
 import androidx.compose.ui.geometry.Rect
+import androidx.compose.ui.geometry.Size
 import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.ColorFilter
 import androidx.compose.ui.graphics.ColorMatrix
-import androidx.compose.ui.graphics.Paint
+import androidx.compose.ui.graphics.ImageBitmap
 import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.PathEffect
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
+import androidx.compose.ui.graphics.drawscope.CanvasDrawScope
 import androidx.compose.ui.graphics.drawscope.DrawScope
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.drawscope.drawIntoCanvas
 import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
@@ -42,8 +42,18 @@ import androidx.compose.ui.graphics.drawscope.withTransform
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.unit.Density
 import androidx.compose.ui.unit.Dp
+import androidx.compose.ui.unit.IntRect
+import androidx.compose.ui.unit.LayoutDirection
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.currentStateAsState
+import kotlinx.coroutines.delay
+import kotlin.math.ceil
+import kotlin.math.floor
+import androidx.compose.ui.graphics.Canvas as BitmapCanvas
 
 enum class Mood { UYKU, MERAK, MUTLU }
 
@@ -69,6 +79,11 @@ fun sakaMood(tod: Tod, pokes: Int, forced: Mood? = null): Mood {
 /**
  * Şaka: kahverengi tekir sokak kedisi. Tasarımdaki SVG'nin birebir Compose çizimi.
  * Çenesi yamuk, alt dudağı koyu, tek dişi görünür, sağ kulağı kesik, badem gözlü, ince koyu tasmalı.
+ *
+ * Performans: kedinin hareketsiz parçaları boyut başına bir kez bitmap'e pişirilir, her karede sadece
+ * birkaç bitmap ve gözler çizilir. Tek bir saat (en fazla ~30 kare/sn, küçük kedide ~15) tüm
+ * hareketleri saf matematikle üretir; saat sadece çizim fazında okunur, yeniden kompozisyon olmaz.
+ * Uygulama RESUMED değilken ya da animate = false iken saat durur.
  */
 @Composable
 fun Saka(
@@ -81,26 +96,36 @@ fun Saka(
     line: String? = null,
     lineColor: Color = Color(0xFFBDBDBD),
     zColor: Color = C.fg,
+    animate: Boolean = true,
 ) {
-    val t = rememberInfiniteTransition(label = "saka")
-    val tailDur = when (mood) { Mood.MUTLU -> 1200; Mood.UYKU -> 7000; Mood.MERAK -> 3400 }
-    val tail by t.animateFloat(0f, -14f, infiniteRepeatable(tween(tailDur / 2, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "tail")
-    val breath by t.animateFloat(1f, if (mood == Mood.UYKU) 1.035f else 1.025f,
-        infiniteRepeatable(tween(if (mood == Mood.UYKU) 2500 else 2100, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "breath")
-    val head by t.animateFloat(0f, -3f, infiniteRepeatable(tween(4500, easing = FastOutSlowInEasing), RepeatMode.Reverse), label = "head")
-    val blink by t.animateFloat(1f, 1f, infiniteRepeatable(keyframes {
-        durationMillis = 6000; 1f at 5580; 0.08f at 5760; 1f at 6000
-    }), label = "blink")
-    val ear by t.animateFloat(0f, 0f, infiniteRepeatable(keyframes {
-        durationMillis = 8000; 0f at 7040; -10f at 7360; 4f at 7680; 0f at 8000
-    }), label = "ear")
-    val float by t.animateFloat(0f, 1f, infiniteRepeatable(tween(3000, easing = LinearEasing)), label = "z")
+    val lifecycleState by LocalLifecycleOwner.current.lifecycle.currentStateAsState()
+    val running = animate && lifecycleState.isAtLeast(Lifecycle.State.RESUMED)
+    // Küçük kedi (alt bilgi, detay): sadece nefes ve z, daha seyrek kare.
+    val small = size < 160.dp
 
-    val open by animateFloatAsState(if (mood == Mood.MERAK) 1f else 0f, tween(350), label = "o")
-    val closed by animateFloatAsState(if (mood == Mood.UYKU) 1f else 0f, tween(350), label = "c")
-    val happy by animateFloatAsState(if (mood == Mood.MUTLU) 1f else 0f, tween(350), label = "h")
-    val pupil by animateFloatAsState(when (tod) { Tod.GECE -> 8.5f; Tod.AKSAM -> 7f; else -> 5f }, tween(600), label = "p")
-    val lookX by animateFloatAsState(look, tween(500, easing = EASE), label = "l")
+    val clock = remember { mutableLongStateOf(0L) }
+    LaunchedEffect(running, small) {
+        if (!running) return@LaunchedEffect
+        val gap = if (small) 52L else 18L // bir sonraki vsync ile ~15 / ~30 kare/sn
+        var base = Long.MIN_VALUE
+        while (true) {
+            withFrameMillis { ms ->
+                if (base == Long.MIN_VALUE) base = ms - clock.longValue
+                clock.longValue = ms - base
+            }
+            delay(gap)
+        }
+    }
+
+    // Ruh hali geçişleri: State olarak tutulur, değer sadece çizimde okunur.
+    val open = animateFloatAsState(if (mood == Mood.MERAK) 1f else 0f, tween(350), label = "o")
+    val closed = animateFloatAsState(if (mood == Mood.UYKU) 1f else 0f, tween(350), label = "c")
+    val happy = animateFloatAsState(if (mood == Mood.MUTLU) 1f else 0f, tween(350), label = "h")
+    val pupil = animateFloatAsState(when (tod) { Tod.GECE -> 8.5f; Tod.AKSAM -> 7f; else -> 5f }, tween(600), label = "p")
+    val lookX = animateFloatAsState(look, tween(500, easing = EASE), label = "l")
+
+    val layers = remember(mono) { CatLayers(if (mono) MONO else null) }
+    val motion = remember { Motion() }
 
     Column(modifier.width(size)) {
         if (line != null) {
@@ -113,15 +138,57 @@ fun Saka(
         }
         Canvas(Modifier.fillMaxWidth().aspectRatio(260f / 226f).graphicsLayer()) {
             val s = this.size.width / 260f
-            val layer = if (mono) Paint().apply { colorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) }) } else null
-            if (layer != null) drawIntoCanvas { it.saveLayer(Rect(Offset.Zero, this.size), layer) }
+            if (s <= 0f) return@Canvas
+            layers.ensure(s)
+            motion.at(clock.longValue, mood, small)
             scale(s, s, pivot = Offset.Zero) {
-                drawCat(tail, breath, head, blink, ear, float, open, closed, happy, pupil, lookX, zColor)
+                drawCat(layers, motion, open, closed, happy, pupil, lookX, zColor)
             }
-            if (layer != null) drawIntoCanvas { it.restore() }
         }
     }
 }
+
+// ---------------- hareket: tek saatten saf matematik ----------------
+
+/** Eski InfiniteTransition'ların birebir karşılığı (aynı süreler, aynı eğriler). */
+private class Motion {
+    var tail = 0f; var breath = 1f; var head = 0f; var blink = 1f; var ear = 0f; var float = 0f
+
+    fun at(t: Long, mood: Mood, small: Boolean) {
+        val sleepy = mood == Mood.UYKU
+        breath = 1f + (if (sleepy) 0.035f else 0.025f) * pingPong(t, if (sleepy) 2500 else 2100)
+        float = (t % 3000L).toFloat() / 3000f
+        if (small) { tail = 0f; head = 0f; blink = 1f; ear = 0f; return }
+        val tailDur = when (mood) { Mood.MUTLU -> 1200; Mood.UYKU -> 7000; Mood.MERAK -> 3400 }
+        tail = -14f * pingPong(t, tailDur / 2)
+        head = -3f * pingPong(t, 4500)
+        blink = keys((t % 6000L).toFloat(), BLINK)
+        ear = keys((t % 8000L).toFloat(), EAR)
+    }
+}
+
+/** tween(half, FastOutSlowIn) + RepeatMode.Reverse: 0→1→0, bir tur 2*half ms. */
+private fun pingPong(t: Long, half: Int): Float {
+    val p = (t % (half * 2L)).toFloat() / half
+    return FastOutSlowInEasing.transform(if (p <= 1f) p else 2f - p)
+}
+
+/** Doğrusal ara değerli anahtar kareler: [zaman, değer] çiftleri, zamana göre sıralı. */
+private fun keys(t: Float, k: FloatArray): Float {
+    if (t <= k[0]) return k[1]
+    var i = 0
+    while (i + 2 < k.size) {
+        val t0 = k[i]; val v0 = k[i + 1]; val t1 = k[i + 2]; val v1 = k[i + 3]
+        if (t <= t1) return v0 + (v1 - v0) * ((t - t0) / (t1 - t0))
+        i += 2
+    }
+    return k[k.size - 1]
+}
+
+private val BLINK = floatArrayOf(0f, 1f, 5580f, 1f, 5760f, 0.08f, 6000f, 1f)
+private val EAR = floatArrayOf(0f, 0f, 7040f, 0f, 7360f, -10f, 7680f, 4f, 8000f, 0f)
+
+private val MONO: ColorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) })
 
 // ---------------- çizim ----------------
 
@@ -188,12 +255,13 @@ private object Art {
     val heart = p("M172 40 c-6 -8 -18 -2 -12 8 l12 10 l12 -10 c6 -10 -6 -16 -12 -8 z")
 }
 
-private fun DrawScope.fill(path: Path, color: Color, alpha: Float = 1f) = drawPath(path, color, alpha)
-
 // Fırçalar bir kez hesaplanır; her karede yeniden üretilmez.
 private val BRUSHES = HashMap<Path, Brush>()
 
-private fun DrawScope.fillG(path: Path, g: Grad, alpha: Float = 1f) {
+private fun DrawScope.fill(path: Path, color: Color, alpha: Float = 1f, cf: ColorFilter? = null) =
+    drawPath(path, color, alpha, colorFilter = cf)
+
+private fun DrawScope.fillG(path: Path, g: Grad, alpha: Float = 1f, cf: ColorFilter? = null) {
     val brush = BRUSHES.getOrPut(path) {
         val b = path.getBounds()
         Brush.radialGradient(
@@ -202,94 +270,196 @@ private fun DrawScope.fillG(path: Path, g: Grad, alpha: Float = 1f) {
             radius = g.r * maxOf(b.width, b.height),
         )
     }
-    drawPath(path, brush, alpha)
+    drawPath(path, brush, alpha, colorFilter = cf)
 }
 
-private fun DrawScope.line(path: Path, color: Color, w: Float, alpha: Float = 1f, dash: PathEffect? = null, round: Boolean = true) =
-    drawPath(path, color, alpha, Stroke(width = w, cap = if (round) StrokeCap.Round else StrokeCap.Butt, join = StrokeJoin.Round, pathEffect = dash))
+private fun DrawScope.line(
+    path: Path, color: Color, w: Float, alpha: Float = 1f, dash: PathEffect? = null, round: Boolean = true, cf: ColorFilter? = null,
+) = drawPath(
+    path, color, alpha,
+    Stroke(width = w, cap = if (round) StrokeCap.Round else StrokeCap.Butt, join = StrokeJoin.Round, pathEffect = dash),
+    colorFilter = cf,
+)
 
 private val DASH = PathEffect.dashPathEffect(floatArrayOf(7f, 13f))
 
+// ---------------- pişmiş katmanlar ----------------
+
+/** Tasarım birimindeki tam sayı dikdörtgen + o bölgenin piksel boyutunda bitmap'i. */
+private class Baked(val r: IntRect, val img: ImageBitmap)
+
+private fun bounds(pad: Float, vararg ps: Path): IntRect {
+    var l = Float.MAX_VALUE; var t = Float.MAX_VALUE; var r = -Float.MAX_VALUE; var b = -Float.MAX_VALUE
+    for (p in ps) {
+        val x = p.getBounds()
+        if (x.left < l) l = x.left
+        if (x.top < t) t = x.top
+        if (x.right > r) r = x.right
+        if (x.bottom > b) b = x.bottom
+    }
+    return IntRect(floor(l - pad).toInt(), floor(t - pad).toInt(), ceil(r + pad).toInt(), ceil(b + pad).toInt())
+}
+
+private fun bake(r: IntRect, s: Float, block: DrawScope.() -> Unit): Baked {
+    val w = ceil(r.width * s).toInt().coerceAtLeast(1)
+    val h = ceil(r.height * s).toInt().coerceAtLeast(1)
+    val img = ImageBitmap(w, h)
+    val sx = w / r.width.toFloat()
+    val sy = h / r.height.toFloat()
+    CanvasDrawScope().draw(Density(1f), LayoutDirection.Ltr, BitmapCanvas(img), Size(w.toFloat(), h.toFloat())) {
+        scale(sx, sy, pivot = Offset.Zero) {
+            translate(-r.left.toFloat(), -r.top.toFloat()) { block() }
+        }
+    }
+    return Baked(r, img)
+}
+
+/** Tasarım biriminde (scale(s) içinde) çağrılır. */
+private fun DrawScope.put(b: Baked) = drawImage(b.img, dstOffset = b.r.topLeft, dstSize = b.r.size)
+
+private object Bounds {
+    val tail = bounds(10f, Art.tail)
+    val body = bounds(4f, Art.body, Art.spine, Art.stripes, Art.stripesThin, Art.belly)
+    val paws = bounds(3f, Art.paw1, Art.paw2, Art.toes1, Art.toes2)
+    val earR = bounds(3f, Art.earR, Art.earRCut, Art.earRIn, Art.earRFur)
+    val face = bounds(4f, Art.earL, Art.earLIn, Art.earLFur, Art.head, Art.mask, Art.mStripes, Art.brow, Art.cheekLines, Art.nose, Art.underEye)
+    val front = bounds(
+        5f, Art.corners, Art.ruff, Art.bib, Art.muzzleL, Art.muzzleR, Art.chin, Art.chinSpot, Art.noseTip,
+        Art.mouth, Art.lip, Art.lipShade, Art.tooth, Art.whiskers, Art.collar, Art.tag,
+    )
+}
+
+/**
+ * Kedinin birbirine göre kıpırdamayan parçaları. Her biri kendi dönüşümüyle (kuyruk dönmesi,
+ * nefes, kulak seğirmesi, baş eğilmesi) tek bir drawImage olarak çizilir.
+ * mono: ekran koruyucu için renksiz; filtre pişirirken uygulanır, karede saveLayer gerekmez.
+ */
+private class CatLayers(val cf: ColorFilter?) {
+    private var scale = -1f
+    lateinit var tail: Baked
+    lateinit var body: Baked
+    lateinit var paws: Baked
+    lateinit var earR: Baked
+    lateinit var face: Baked
+    lateinit var front: Baked
+
+    fun ensure(s: Float) {
+        if (s == scale) return
+        scale = s
+        val a = Art
+        tail = bake(Bounds.tail, s) {
+            line(a.tail, hex(0xFF6C5841), 17f, cf = cf)
+            line(a.tail, hex(0xFF241B12), 17f, 0.8f, DASH, round = false, cf = cf)
+            drawCircle(hex(0xFF1D160F), 8.5f, Offset(182f, 212f), colorFilter = cf)
+        }
+        body = bake(Bounds.body, s) {
+            fillG(a.body, G_BODY, cf = cf)
+            line(a.spine, hex(0xFF3A2E21), 5f, 0.7f, cf = cf)
+            line(a.stripes, hex(0xFF241B12), 5f, 0.7f, cf = cf)
+            line(a.stripesThin, hex(0xFF3A2E21), 2f, 0.35f, cf = cf)
+            fill(a.belly, hex(0xFFA8916F), 0.55f, cf)
+        }
+        paws = bake(Bounds.paws, s) {
+            fill(a.paw1, hex(0xFF8F7959), cf = cf); line(a.toes1, hex(0xFF5A4835), 2f, cf = cf)
+            fill(a.paw2, hex(0xFF8F7959), cf = cf); line(a.toes2, hex(0xFF5A4835), 2f, cf = cf)
+        }
+        earR = bake(Bounds.earR, s) {
+            fill(a.earR, hex(0xFF76624A), cf = cf)
+            line(a.earRCut, hex(0xFF5A4936), 2.2f, cf = cf)
+            fillG(a.earRIn, G_EAR, cf = cf)
+            line(a.earRFur, hex(0xFFEFE4D2), 1.1f, 0.85f, cf = cf)
+        }
+        face = bake(Bounds.face, s) {
+            fill(a.earL, hex(0xFF76624A), cf = cf); fillG(a.earLIn, G_EAR, cf = cf); line(a.earLFur, hex(0xFFEFE4D2), 1.1f, 0.85f, cf = cf)
+            fillG(a.head, G_HEAD, cf = cf)
+            fill(a.mask, hex(0xFFA68D68), 0.45f, cf)
+            line(a.mStripes, hex(0xFF3A2E21), 2.4f, 0.85f, cf = cf)
+            line(a.brow, hex(0xFF3A2E21), 2f, 0.6f, cf = cf)
+            line(a.cheekLines, hex(0xFF2E241A), 2.6f, 0.85f, cf = cf)
+            fill(a.nose, hex(0xFFC4AB83), 0.55f, cf)
+            line(a.underEye, hex(0xFFE6D6B8), 2.2f, 0.8f, cf = cf)
+        }
+        front = bake(Bounds.front, s) {
+            line(a.corners, hex(0xFF1D160F), 2.2f, cf = cf)
+            fill(a.ruff, hex(0xFF806A4D), cf = cf)
+            fill(a.bib, hex(0xFFB9A382), 0.6f, cf)
+            fill(a.muzzleL, hex(0xFFCDB894), 0.55f, cf)
+            fill(a.muzzleR, hex(0xFFCDB894), 0.55f, cf)
+            rotate(6f, pivot = Offset(97f, 150f)) { fill(a.chin, hex(0xFFD8CCB6), cf = cf) }
+            rotate(12f, pivot = Offset(104f, 147f)) { fill(a.chinSpot, hex(0xFF2A2019), 0.85f, cf) }
+            fill(a.noseTip, hex(0xFFA85F52), cf = cf); line(a.noseTip, hex(0xFF2E211A), 1.4f, cf = cf)
+            line(a.mouth, hex(0xFF2A1F17), 1.8f, cf = cf)
+            fill(a.lip, hex(0xFF231A14), cf = cf)
+            fill(a.lipShade, hex(0xFF140D09), cf = cf)
+            fill(a.tooth, hex(0xFFFBF7EE), cf = cf); line(a.tooth, hex(0xFFBDB3A2), 0.5f, cf = cf)
+            for (c in WHISKER_DOTS) drawCircle(hex(0xFF3E3024), 0.9f, c, colorFilter = cf)
+            line(a.whiskers, hex(0xFFF3ECE0), 1f, 0.7f, cf = cf)
+            line(a.collar, hex(0xFF161616), 5.5f, cf = cf)
+            fill(a.tag, hex(0xFFC9CCD2), cf = cf); line(a.tag, hex(0xFF8A8E96), 1f, cf = cf)
+        }
+    }
+}
+
+private val WHISKER_DOTS = listOf(Offset(81f, 130f), Offset(84f, 134f), Offset(111f, 130f), Offset(108f, 134f))
+private val SHADOW = Color(0x38000000)
+private val PUPIL_SIZE_H = 20f
+
+// ---------------- kare ----------------
+
 private fun DrawScope.drawCat(
-    tail: Float, breath: Float, head: Float, blink: Float, ear: Float, float: Float,
-    open: Float, closed: Float, happy: Float, pupil: Float, look: Float, zColor: Color,
+    L: CatLayers, m: Motion,
+    openS: State<Float>, closedS: State<Float>, happyS: State<Float>, pupilS: State<Float>, lookS: State<Float>,
+    zColor: Color,
 ) {
     val a = Art
-    fill(a.shadow, Color(0x38000000))
+    val cf = L.cf
+    val open = openS.value
+    val closed = closedS.value
+    val happy = happyS.value
 
-    rotate(tail, pivot = Offset(236f, 152f)) {
-        line(a.tail, hex(0xFF6C5841), 17f)
-        line(a.tail, hex(0xFF241B12), 17f, 0.8f, DASH, round = false)
-        drawCircle(hex(0xFF1D160F), 8.5f, Offset(182f, 212f))
-    }
+    fill(a.shadow, SHADOW)
 
-    scale(1f, breath, pivot = Offset(156f, 212f)) {
-        fillG(a.body, G_BODY)
-        line(a.spine, hex(0xFF3A2E21), 5f, 0.7f)
-        line(a.stripes, hex(0xFF241B12), 5f, 0.7f)
-        line(a.stripesThin, hex(0xFF3A2E21), 2f, 0.35f)
-        fill(a.belly, hex(0xFFA8916F), 0.55f)
-    }
+    if (m.tail != 0f) rotate(m.tail, pivot = Offset(236f, 152f)) { put(L.tail) } else put(L.tail)
 
-    fill(a.paw1, hex(0xFF8F7959)); line(a.toes1, hex(0xFF5A4835), 2f)
-    fill(a.paw2, hex(0xFF8F7959)); line(a.toes2, hex(0xFF5A4835), 2f)
+    scale(1f, m.breath, pivot = Offset(156f, 212f)) { put(L.body) }
 
-    rotate(head, pivot = Offset(96f, 167f)) {
-        fill(a.earL, hex(0xFF76624A)); fillG(a.earLIn, G_EAR); line(a.earLFur, hex(0xFFEFE4D2), 1.1f, 0.85f)
-        rotate(ear, pivot = Offset(112f, 94f)) {
-            fill(a.earR, hex(0xFF76624A))
-            line(a.earRCut, hex(0xFF5A4936), 2.2f)
-            fillG(a.earRIn, G_EAR)
-            line(a.earRFur, hex(0xFFEFE4D2), 1.1f, 0.85f)
+    put(L.paws)
+
+    rotate(m.head, pivot = Offset(96f, 167f)) {
+        if (m.ear != 0f) rotate(m.ear, pivot = Offset(112f, 94f)) { put(L.earR) } else put(L.earR)
+        put(L.face)
+
+        if (open > 0.01f) {
+            val pupil = pupilS.value
+            val look = lookS.value
+            withTransform({
+                scale(1.12f, 1.12f, pivot = Offset(96f, 99f))
+                scale(1f, m.blink, pivot = Offset(96f, 97f))
+            }) {
+                fillG(a.eyeL, G_EYE, open, cf); fillG(a.eyeR, G_EYE, open, cf)
+                line(a.eyeL, hex(0xFF1D160F), 2.6f, open, cf = cf)
+                line(a.eyeR, hex(0xFF1D160F), 2.6f, open, cf = cf)
+                val pc = hex(0xFF100B07)
+                drawOval(pc, Offset(72f + look - pupil, 89.5f), Size(pupil * 2, PUPIL_SIZE_H), open, colorFilter = cf)
+                drawOval(pc, Offset(120f + look - pupil, 89.5f), Size(pupil * 2, PUPIL_SIZE_H), open, colorFilter = cf)
+                fill(a.lids, hex(0xFF735F45), open, cf)
+                drawCircle(Color.White, 2.2f, Offset(76f, 95.5f), 0.9f * open)
+                drawCircle(Color.White, 2.2f, Offset(124f, 95.5f), 0.9f * open)
+            }
         }
-        fillG(a.head, G_HEAD)
-        fill(a.mask, hex(0xFFA68D68), 0.45f)
-        line(a.mStripes, hex(0xFF3A2E21), 2.4f, 0.85f)
-        line(a.brow, hex(0xFF3A2E21), 2f, 0.6f)
-        line(a.cheekLines, hex(0xFF2E241A), 2.6f, 0.85f)
-        fill(a.nose, hex(0xFFC4AB83), 0.55f)
-        line(a.underEye, hex(0xFFE6D6B8), 2.2f, 0.8f)
-
-        if (open > 0.01f) withTransform({
-            scale(1.12f, 1.12f, pivot = Offset(96f, 99f))
-            scale(1f, blink, pivot = Offset(96f, 97f))
-        }) {
-            fillG(a.eyeL, G_EYE, open); fillG(a.eyeR, G_EYE, open)
-            line(a.eyeL, hex(0xFF1D160F), 2.6f, open)
-            line(a.eyeR, hex(0xFF1D160F), 2.6f, open)
-            val pc = hex(0xFF100B07)
-            drawOval(pc, Offset(72f + look - pupil, 89.5f), androidx.compose.ui.geometry.Size(pupil * 2, 20f), open)
-            drawOval(pc, Offset(120f + look - pupil, 89.5f), androidx.compose.ui.geometry.Size(pupil * 2, 20f), open)
-            fill(a.lids, hex(0xFF735F45), open)
-            drawCircle(Color.White, 2.2f, Offset(76f, 95.5f), 0.9f * open)
-            drawCircle(Color.White, 2.2f, Offset(124f, 95.5f), 0.9f * open)
-        }
-        if (closed > 0.01f) line(a.closedEyes, hex(0xFF1D160F), 3f, closed)
+        if (closed > 0.01f) line(a.closedEyes, hex(0xFF1D160F), 3f, closed, cf = cf)
         if (happy > 0.01f) {
-            fillG(a.happyFill, G_EYE, happy)
-            line(a.happyLine, hex(0xFF1D160F), 2.8f, happy)
+            fillG(a.happyFill, G_EYE, happy, cf)
+            line(a.happyLine, hex(0xFF1D160F), 2.8f, happy, cf = cf)
         }
-        line(a.corners, hex(0xFF1D160F), 2.2f)
-        fill(a.ruff, hex(0xFF806A4D))
-        fill(a.bib, hex(0xFFB9A382), 0.6f)
-        fill(a.muzzleL, hex(0xFFCDB894), 0.55f)
-        fill(a.muzzleR, hex(0xFFCDB894), 0.55f)
-        rotate(6f, pivot = Offset(97f, 150f)) { fill(a.chin, hex(0xFFD8CCB6)) }
-        rotate(12f, pivot = Offset(104f, 147f)) { fill(a.chinSpot, hex(0xFF2A2019), 0.85f) }
-        fill(a.noseTip, hex(0xFFA85F52)); line(a.noseTip, hex(0xFF2E211A), 1.4f)
-        line(a.mouth, hex(0xFF2A1F17), 1.8f)
-        fill(a.lip, hex(0xFF231A14))
-        fill(a.lipShade, hex(0xFF140D09))
-        fill(a.tooth, hex(0xFFFBF7EE)); line(a.tooth, hex(0xFFBDB3A2), 0.5f)
-        for (c in listOf(Offset(81f, 130f), Offset(84f, 134f), Offset(111f, 130f), Offset(108f, 134f))) drawCircle(hex(0xFF3E3024), 0.9f, c)
-        line(a.whiskers, hex(0xFFF3ECE0), 1f, 0.7f)
-        line(a.collar, hex(0xFF161616), 5.5f)
-        fill(a.tag, hex(0xFFC9CCD2)); line(a.tag, hex(0xFF8A8E96), 1f)
+
+        put(L.front)
     }
 
     // z ve kalp: yükselip kaybolur
-    val fa = when { float < 0.25f -> float / 0.25f; else -> 1f - (float - 0.25f) / 0.75f }
-    translate(16f * float, 6f - 40f * float) {
+    val f = m.float
+    val fa = if (f < 0.25f) f / 0.25f else 1f - (f - 0.25f) / 0.75f
+    if (closed > 0.01f || happy > 0.01f) translate(16f * f, 6f - 40f * f) {
         if (closed > 0.01f) {
             line(a.z1, zColor, 3.2f, fa * closed)
             line(a.z2, zColor, 4.2f, fa * closed)
