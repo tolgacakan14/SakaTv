@@ -62,8 +62,25 @@ adb_bul() {
 }
 
 ADB=""
+YABANCI_UYARILDI=""
 adb_hazirla() {
   ADB="$(adb_bul)"
+  # Başka bir programın adb'si (örn. Splashtop XDisplay, Android Studio) sunucuyu tutuyorsa
+  # onu kapatıp SDK'daki adb ile devam et. Yoksa sürümler sürekli birbirini düşürüyor.
+  if [ -n "$ADB" ] && [ -x "$SDK_ADB" ] && [ "$ADB" != "$SDK_ADB" ]; then
+    if [ -z "$YABANCI_UYARILDI" ]; then
+      not "Başka bir programın adb'si çalışıyor: $ADB"
+      case "$ADB" in
+        *Splashtop*) not "Bu Splashtop XDisplay. Kurulum sırasında Splashtop'u menü çubuğundan tamamen kapat (Quit).";;
+        *"Android Studio"*) not "Bu Android Studio. Kurulum sırasında Android Studio'yu Cmd + Q ile kapat.";;
+      esac
+      YABANCI_UYARILDI=1
+    fi
+    "$ADB" kill-server >/dev/null 2>&1
+    sleep 1
+    ADB="$SDK_ADB"
+    "$ADB" start-server >/dev/null 2>&1
+  fi
   if [ -z "$ADB" ]; then
     hata "adb bulunamadı."
     bilgi "Android Studio'yu kur ve bir kez aç (SDK'yı indirsin). adb şurada olmalı:"
@@ -147,6 +164,14 @@ baglan_tv() {
     sleep 1
     adb_hazirla
   done
+  if [ "$durum" != "device" ]; then
+    # "already connected" ama cihaz görünmüyorsa: bağlantıyı bırakıp tazele.
+    "$ADB" disconnect "$TV" >/dev/null 2>&1
+    sleep 1
+    o="$("$ADB" connect "$TV" 2>&1 | temizle)"
+    sleep 2
+    durum="$("$ADB" -s "$TV" get-state 2>&1 | temizle)"
+  fi
   if [ "$durum" = "device" ]; then
     [ "$sessiz" = "sessiz" ] || ok "TV bağlı: $TV"
     return 0
