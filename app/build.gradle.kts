@@ -27,6 +27,13 @@ android {
     }
 
     buildTypes {
+        // TV'de hız için: Android Studio'nun normal "debug" derlemesi de küçültülmüş ve optimize edilmiş çıkar.
+        debug {
+            isDebuggable = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            proguardFiles(getDefaultProguardFile("proguard-android-optimize.txt"), "proguard-rules.pro")
+        }
         release {
             isMinifyEnabled = true
             isShrinkResources = true
@@ -50,11 +57,10 @@ dependencies {
     implementation(composeBom)
     implementation("androidx.compose.ui:ui")
     implementation("androidx.compose.foundation:foundation")
-    implementation("androidx.compose.ui:ui-tooling-preview")
     implementation("androidx.activity:activity-compose:1.9.2")
     implementation("androidx.core:core-ktx:1.13.1")
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.6")
     implementation("androidx.lifecycle:lifecycle-runtime-compose:2.8.6")
     implementation("io.coil-kt:coil-compose:2.7.0")
-    debugImplementation("androidx.compose.ui:ui-tooling")
+    implementation("androidx.profileinstaller:profileinstaller:1.3.1")
 }

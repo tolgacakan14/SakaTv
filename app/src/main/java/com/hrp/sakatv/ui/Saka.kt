@@ -39,6 +39,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.drawscope.scale
 import androidx.compose.ui.graphics.drawscope.translate
 import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.graphics.vector.PathParser
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.unit.Dp
@@ -110,7 +111,7 @@ fun Saka(
             }
             Spacer(Modifier.height(4.dp))
         }
-        Canvas(Modifier.fillMaxWidth().aspectRatio(260f / 226f)) {
+        Canvas(Modifier.fillMaxWidth().aspectRatio(260f / 226f).graphicsLayer()) {
             val s = this.size.width / 260f
             val layer = if (mono) Paint().apply { colorFilter = ColorFilter.colorMatrix(ColorMatrix().apply { setToSaturation(0f) }) } else null
             if (layer != null) drawIntoCanvas { it.saveLayer(Rect(Offset.Zero, this.size), layer) }
@@ -189,13 +190,18 @@ private object Art {
 
 private fun DrawScope.fill(path: Path, color: Color, alpha: Float = 1f) = drawPath(path, color, alpha)
 
+// Fırçalar bir kez hesaplanır; her karede yeniden üretilmez.
+private val BRUSHES = HashMap<Path, Brush>()
+
 private fun DrawScope.fillG(path: Path, g: Grad, alpha: Float = 1f) {
-    val b = path.getBounds()
-    val brush = Brush.radialGradient(
-        colorStops = *g.stops,
-        center = Offset(b.left + g.cx * b.width, b.top + g.cy * b.height),
-        radius = g.r * maxOf(b.width, b.height),
-    )
+    val brush = BRUSHES.getOrPut(path) {
+        val b = path.getBounds()
+        Brush.radialGradient(
+            colorStops = *g.stops,
+            center = Offset(b.left + g.cx * b.width, b.top + g.cy * b.height),
+            radius = g.r * maxOf(b.width, b.height),
+        )
+    }
     drawPath(path, brush, alpha)
 }
 

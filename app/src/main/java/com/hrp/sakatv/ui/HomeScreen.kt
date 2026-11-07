@@ -233,7 +233,7 @@ private fun Film5(st: SakaState, onHero: () -> Unit, modifier: Modifier) {
     val five = st.five().map { st.film(it) }
     var sel by remember { mutableIntStateOf(0) }
     val s = sel.coerceIn(0, maxOf(0, five.size - 1))
-    LaunchedEffect(five.map { it.key }) { five.forEach { st.ensure(it) } }
+    LaunchedEffect(five.getOrNull(s)?.key) { five.getOrNull(s)?.let { st.ensure(it) } }
     val cur = five.getOrNull(s)
     val top = five.maxOfOrNull { it.rating } ?: 0.0
 
@@ -264,7 +264,7 @@ private fun Film5(st: SakaState, onHero: () -> Unit, modifier: Modifier) {
                         maxLines = 2, overflow = TextOverflow.Ellipsis)
                     Spacer(Modifier.height(18.dp))
                     Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                        Pill("▶  Fragman", { st.films.openTrailer(cur, st.apps) }, solid = true, onFocus = onHero)
+                        Pill("▶  Fragman", { st.playTrailer(cur) }, solid = true, onFocus = onHero)
                         Pill("İzledim", { st.toggleWatched(cur); sel = 0 }, onFocus = onHero)
                         Pill("Detay", { st.screen = Screen.Detail(cur.key) }, onFocus = onHero)
                     }
@@ -323,7 +323,7 @@ private fun Film5(st: SakaState, onHero: () -> Unit, modifier: Modifier) {
 
 @Composable
 private fun Rows(st: SakaState) {
-    val known = (st.archive + st.fresh + st.popular).distinctBy { it.key }
+    val known = remember(st.archive, st.fresh, st.popular) { (st.archive + st.fresh + st.popular).distinctBy { it.key } }
     Column(Modifier.padding(start = 72.dp, end = 72.dp, top = 40.dp), verticalArrangement = Arrangement.spacedBy(44.dp)) {
         val classics = st.archive.filter { it.key !in st.watched }.take(30)
         FilmRow(st, "Klasikler", "IMDb ilk 500 · izlemediklerin", classics) { "★ " + "%.1f".format(it.rating) + " · " + it.year }
@@ -364,7 +364,6 @@ private fun FilmRow(
             ) {
                 items(films.distinctBy { it.key }, key = { it.key }) { raw ->
                     val f = st.film(raw)
-                    LaunchedEffect(f.key) { st.ensure(raw) }
                     PosterCard(
                         f, caption(f),
                         onClick = {
@@ -383,7 +382,7 @@ private fun FilmRow(
 
 @Composable
 private fun AppsGrid(st: SakaState, onMenu: (String) -> Unit) {
-    val recent = st.allApps.sortedByDescending { st.apps.lastUsed(it.pkg) }.take(16)
+    val recent = remember(st.allApps) { st.allApps.sortedByDescending { st.apps.lastUsed(it.pkg) }.take(16) }
     var hint by remember { mutableStateOf("Uzun bas: dock'a ekle, sırala, kaldır") }
     Column(Modifier.padding(start = 72.dp, end = 72.dp, top = 52.dp)) {
         SectionTitle("Uygulamalar", "Google TV'deki tüm uygulamaların burada", right = hint)

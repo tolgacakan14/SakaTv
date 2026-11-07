@@ -38,7 +38,7 @@ fun FilmDetail(st: SakaState, key: String) {
     val raw = st.byKey(key)
     BackHandler { st.screen = Screen.Home }
     if (raw == null) { LaunchedEffect(Unit) { st.screen = Screen.Home }; return }
-    LaunchedEffect(key) { st.ensure(raw) }
+    LaunchedEffect(key) { st.ensure(raw, full = true) }
     val f = st.film(raw)
     var where by remember(key) { mutableStateOf<List<Pair<String, String>>?>(null) }
     var showWhere by remember(key) { mutableStateOf(false) }
@@ -104,7 +104,7 @@ fun FilmDetail(st: SakaState, key: String) {
             }
             Spacer(Modifier.height(22.dp))
             Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
-                Pill("▶  Fragmanı izle", { st.films.openTrailer(f, st.apps) }, solid = true, requester = first)
+                Pill("▶  Fragmanı izle", { st.playTrailer(f) }, solid = true, requester = first)
                 Pill(if (showWhere) "Özete dön" else "Nerede izlenir?", { showWhere = !showWhere })
                 Pill(if (watched) "İzledim ✓" else "İzledim", { st.toggleWatched(f) })
                 Pill(if (listed) "Listemde ✓" else "Listeme ekle", { st.toggleList(f) })
@@ -125,7 +125,6 @@ fun FilmDetail(st: SakaState, key: String) {
                 Spacer(Modifier.height(14.dp))
                 Row(horizontalArrangement = Arrangement.spacedBy(16.dp)) {
                     sims.forEach { s ->
-                        LaunchedEffect(s.key) { st.ensure(s) }
                         Focusable({ st.screen = Screen.Detail(s.key) }) { foc ->
                             PosterImage(st.film(s), 92, 138, color = foc, modifier = if (foc) Modifier.ring() else Modifier)
                         }

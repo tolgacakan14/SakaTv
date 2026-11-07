@@ -93,12 +93,25 @@ class SakaState(private val ctx: Context, private val scope: CoroutineScope) {
     fun byKey(k: String): Film? = rich[k] ?: (archive + fresh + popular).firstOrNull { it.key == k }
 
     /** Afiş, özet ve fragman eksikse arka planda TMDB'den tamamlar. */
-    fun ensure(f: Film) {
-        if (!films.hasTmdb || rich.containsKey(f.key) || !pending.add(f.key)) return
+    fun ensure(f: Film, full: Boolean = false) {
+        // Arşivde afiş ve özet zaten varsa ağa hiç çıkmaz. Detay ekranı yönetmen ve oyuncuları da ister.
+        val complete = f.poster != null && f.overview.isNotBlank() && (!full || (f.director.isNotBlank() && f.runtime > 0))
+        if (complete || !films.hasTmdb || rich.containsKey(f.key) || !pending.add(f.key)) return
         scope.launch {
             val e = runCatching { films.enrich(f) }.getOrDefault(f)
             rich[f.key] = e
             pending.remove(f.key)
+        }
+    }
+
+    /** Fragman anahtarı yoksa önce onu bulur, sonra açar. */
+    fun playTrailer(f: Film) {
+        val cur = film(f)
+        if (cur.trailer != null || !films.hasTmdb) { films.openTrailer(cur, apps); return }
+        scope.launch {
+            val e = runCatching { films.enrich(cur) }.getOrDefault(cur)
+            rich[f.key] = e
+            films.openTrailer(e, apps)
         }
     }
 

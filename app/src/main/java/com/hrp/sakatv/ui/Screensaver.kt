@@ -33,6 +33,7 @@ import androidx.compose.ui.graphics.drawscope.rotate
 import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
 import kotlinx.coroutines.delay
 import java.util.Calendar
@@ -64,7 +65,7 @@ fun Screensaver(st: SakaState, wake: Int, onDone: () -> Unit) {
     val minute = now.get(Calendar.MINUTE)
 
     Box(Modifier.fillMaxSize().background(Color.Black).graphicsLayer { alpha = dim }) {
-        Box(Modifier.offset((72 + lx).dp, (44 + ly).dp).size(380.dp, 440.dp).graphicsLayer { alpha = out; scaleX = 0.98f + 0.02f * out; scaleY = scaleX }) {
+        Box(Modifier.offset { IntOffset((72 + lx).dp.roundToPx(), (44 + ly).dp.roundToPx()) }.size(380.dp, 440.dp).graphicsLayer { alpha = out; scaleX = 0.98f + 0.02f * out; scaleY = scaleX }) {
             Box(Modifier.offset(40.dp, 0.dp).size(300.dp)) {
                 Canvas(Modifier.fillMaxSize()) {
                     val c = Offset(size.width / 2, size.height / 2)
